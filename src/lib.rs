@@ -3,9 +3,8 @@ use std::cmp::max;
 use std::mem::MaybeUninit;
 
 #[derive(Debug, Clone)]
-pub struct GotohParameters {
-    match_: isize,
-    mismatch: isize,
+pub struct GotohParameters<F> where F: Fn(usize, usize) -> isize {
+    matcher: F,
     gap_opening: isize,
     gap_enlargement: isize,
 }
@@ -17,9 +16,8 @@ pub enum GotohMatrix {
     Q,
 }
 
-pub struct GotohMatrices<'a, F: Fn(usize, usize) -> bool> {
-    params: &'a GotohParameters,
-    are_equal: F,
+pub struct GotohMatrices<'a, F> where F: Fn(usize, usize) -> isize {
+    params: &'a GotohParameters<F>,
     p: Array2<isize>,
     d: Array2<isize>,
     q: Array2<isize>,
@@ -30,23 +28,22 @@ pub struct GotohAlignment {
     steps: Vec<(Option<usize>, Option<usize>)>,
 }
 
-impl GotohParameters {
-    pub fn new(match_: isize, mismatch: isize, gap_opening: isize, gap_enlargement: isize) -> Self {
+impl<F> GotohParameters<F> where F: Fn(usize, usize) -> isize {
+    pub fn new(matcher: F, gap_opening: isize, gap_enlargement: isize) -> Self {
         Self {
-            match_,
-            mismatch,
+            matcher,
             gap_opening,
             gap_enlargement,
         }
     }
 }
 
-impl<'a, F: Fn(usize, usize) -> bool> GotohMatrices<'a, F> {
+impl<'a, F> GotohMatrices<'a, F>
+where F: Fn(usize, usize) -> isize {
     pub fn new(
-        params: &'a GotohParameters,
+        params: &'a GotohParameters<F>,
         seq1_len: usize,
         seq2_len: usize,
-        are_equal: F,
     ) -> GotohMatrices<F> {
         let ncolumns = seq1_len;
         let nrows = seq2_len;
@@ -98,11 +95,7 @@ impl<'a, F: Fn(usize, usize) -> bool> GotohMatrices<'a, F> {
 
                 let new_d_value = {
                     let d_value = unsafe { d_matrix[[i, j]].assume_init() };
-                    let score = if are_equal(j, i) {
-                        params.match_
-                    } else {
-                        params.mismatch
-                    };
+                    let score = (params.matcher)(j, i);
                     max(max(d_value + score, new_p_value), new_q_value)
                 };
                 d_matrix[[i + 1, j + 1]] = MaybeUninit::new(new_d_value);
@@ -112,7 +105,6 @@ impl<'a, F: Fn(usize, usize) -> bool> GotohMatrices<'a, F> {
         unsafe {
             GotohMatrices {
                 params,
-                are_equal,
                 p: p_matrix.assume_init(),
                 d: d_matrix.assume_init(),
                 q: q_matrix.assume_init(),
@@ -122,13 +114,6 @@ impl<'a, F: Fn(usize, usize) -> bool> GotohMatrices<'a, F> {
 
     pub fn backtrack(&self) -> GotohAlignment {
         let (p, d, q) = (&self.p, &self.d, &self.q);
-        let score = |x, y| {
-            if (self.are_equal)(x, y) {
-                self.params.match_
-            } else {
-                self.params.mismatch
-            }
-        };
 
         let (mut i, mut j) = self.p.dim();
         let mut matrix = GotohMatrix::D;
@@ -137,7 +122,7 @@ impl<'a, F: Fn(usize, usize) -> bool> GotohMatrices<'a, F> {
         while i != 0 && j != 0 {
             match matrix {
                 GotohMatrix::D => {
-                    if d[[i, j]] == d[[i - 1, j - 1]] + score(j - 1, i - 1) {
+                    if d[[i, j]] == d[[i - 1, j - 1]] + (self.params.matcher)(j - 1, i - 1) {
                         steps.push((Some(j - 1), Some(i - 1)));
                         i -= 1;
                         j -= 1;
@@ -292,24 +277,14 @@ impl<'a, F: Fn(usize, usize) -> bool> GotohMatrices<'a, F> {
 }
 
 impl GotohAlignment {
-    pub fn new<P: PartialEq, V: AsRef<[P]>>(
-        params: &GotohParameters,
+    pub fn new<P, V: AsRef<[P]>, F: Fn(usize, usize) -> isize>(
+        params: &GotohParameters<F>,
         seq1: V,
         seq2: V,
     ) -> GotohAlignment {
         let seq1 = seq1.as_ref();
         let seq2 = seq2.as_ref();
-        let are_equal = |x, y| seq1[x] == seq2[y];
-        Self::new_with_equality_fn(params, seq1.len(), seq2.len(), are_equal)
-    }
-
-    pub fn new_with_equality_fn<F: Fn(usize, usize) -> bool>(
-        params: &GotohParameters,
-        seq1_len: usize,
-        seq2_len: usize,
-        are_equal: F,
-    ) -> GotohAlignment {
-        let matrices: GotohMatrices<_> = GotohMatrices::new(params, seq1_len, seq2_len, are_equal);
+        let matrices: GotohMatrices<_> = GotohMatrices::new(params, seq1.len(), seq2.len());
         matrices.backtrack()
     }
 
@@ -324,12 +299,11 @@ mod tests {
 
     #[test]
     fn matrices() {
-        let params = GotohParameters::new(1, -1, -3, -1);
         let seq1 = vec!['C', 'C', 'G', 'A'];
         let seq2 = vec!['C', 'G'];
-        let are_equal = |x, y| seq1[x] == seq2[y];
+        let params = GotohParameters::new(|x, y| if seq1[x] == seq2[y] { 1 } else { -1 }, -3, -1);
         let matrices: GotohMatrices<_> =
-            GotohMatrices::new(&params, seq1.len(), seq2.len(), are_equal);
+            GotohMatrices::new(&params, seq1.len(), seq2.len());
         println!("{}", matrices.p);
         println!("{}", matrices.d);
         println!("{}", matrices.q);
@@ -349,9 +323,9 @@ mod tests {
 
     #[test]
     fn alignment() {
-        let params = GotohParameters::new(1, -3, -3, -1);
         let seq1 = vec!['C', 'C', 'G', 'A'];
         let seq2 = vec!['C', 'G'];
+        let params = GotohParameters::new(|x, y| if seq1[x] == seq2[y] { 1 } else { -3 }, -3, -1);
         let alignment = GotohAlignment::new(&params, &seq1, &seq2);
         let (s1, s2): (Vec<_>, Vec<_>) = alignment.steps.into_iter().rev().unzip();
 
