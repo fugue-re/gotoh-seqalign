@@ -1,42 +1,53 @@
 use ndarray::prelude::*;
-use std::mem::MaybeUninit;
 use std::cmp::max;
+use std::mem::MaybeUninit;
 
+#[derive(Debug, Clone)]
 pub struct GotohParameters {
     match_: isize,
     mismatch: isize,
     gap_opening: isize,
-    gap_enlargement: isize
+    gap_enlargement: isize,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum GotohMatrix {
     P,
     D,
-    Q
+    Q,
 }
 
-pub struct GotohMatrices<F: Fn(usize, usize) -> bool> {
-    params: GotohParameters,
+pub struct GotohMatrices<'a, F: Fn(usize, usize) -> bool> {
+    params: &'a GotohParameters,
     are_equal: F,
     p: Array2<isize>,
     d: Array2<isize>,
-    q: Array2<isize>
+    q: Array2<isize>,
 }
 
-pub struct Alignment {
-    steps: Vec<(Option<usize>, Option<usize>)>
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct GotohAlignment {
+    steps: Vec<(Option<usize>, Option<usize>)>,
 }
 
 impl GotohParameters {
-    pub fn new(match_: isize, mismatch: isize, gap_opening: isize, gap_enlargement: isize)
-            -> Self {
-        Self { match_, mismatch, gap_opening, gap_enlargement }
+    pub fn new(match_: isize, mismatch: isize, gap_opening: isize, gap_enlargement: isize) -> Self {
+        Self {
+            match_,
+            mismatch,
+            gap_opening,
+            gap_enlargement,
+        }
     }
 }
 
-impl<F: Fn(usize, usize) -> bool> GotohMatrices<F> {
-
-    pub fn new(params: GotohParameters, seq1_len: usize, seq2_len: usize, are_equal: F) -> GotohMatrices<F> {
+impl<'a, F: Fn(usize, usize) -> bool> GotohMatrices<'a, F> {
+    pub fn new(
+        params: &'a GotohParameters,
+        seq1_len: usize,
+        seq2_len: usize,
+        are_equal: F,
+    ) -> GotohMatrices<F> {
         let ncolumns = seq1_len;
         let nrows = seq2_len;
 
@@ -45,29 +56,41 @@ impl<F: Fn(usize, usize) -> bool> GotohMatrices<F> {
         let mut d_matrix = Array2::<isize>::uninit((nrows + 1, ncolumns + 1));
 
         d_matrix[[0, 0]] = MaybeUninit::new(0);
-        for i in 1..nrows+1 {
-            d_matrix[[i, 0]] = MaybeUninit::new(params.gap_opening + i as isize * params.gap_enlargement)
+        for i in 1..nrows + 1 {
+            d_matrix[[i, 0]] =
+                MaybeUninit::new(params.gap_opening + i as isize * params.gap_enlargement)
         }
 
-        for j in 1..ncolumns+1 {
-            d_matrix[[0, j]] = MaybeUninit::new(params.gap_opening + j as isize * params.gap_enlargement)
+        for j in 1..ncolumns + 1 {
+            d_matrix[[0, j]] =
+                MaybeUninit::new(params.gap_opening + j as isize * params.gap_enlargement)
         }
 
         for i in 0..nrows {
             for j in 0..ncolumns {
                 let new_p_value = {
-                    let d_value = unsafe { d_matrix[[i, j+1]].assume_init() } + params.gap_opening + params.gap_enlargement;
-                    if i == 0 { d_value } else {
-                        let p_value = unsafe { p_matrix[[i-1, j]].assume_init() } + params.gap_enlargement;
+                    let d_value = unsafe { d_matrix[[i, j + 1]].assume_init() }
+                        + params.gap_opening
+                        + params.gap_enlargement;
+                    if i == 0 {
+                        d_value
+                    } else {
+                        let p_value =
+                            unsafe { p_matrix[[i - 1, j]].assume_init() } + params.gap_enlargement;
                         max(d_value, p_value)
                     }
                 };
                 p_matrix[[i, j]] = MaybeUninit::new(new_p_value);
 
                 let new_q_value = {
-                    let d_value = unsafe { d_matrix[[i+1, j]].assume_init() }  + params.gap_opening + params.gap_enlargement;
-                    if j == 0 { d_value } else {
-                        let q_value = unsafe { q_matrix[[i, j-1]].assume_init() } + params.gap_enlargement;
+                    let d_value = unsafe { d_matrix[[i + 1, j]].assume_init() }
+                        + params.gap_opening
+                        + params.gap_enlargement;
+                    if j == 0 {
+                        d_value
+                    } else {
+                        let q_value =
+                            unsafe { q_matrix[[i, j - 1]].assume_init() } + params.gap_enlargement;
                         max(d_value, q_value)
                     }
                 };
@@ -75,10 +98,14 @@ impl<F: Fn(usize, usize) -> bool> GotohMatrices<F> {
 
                 let new_d_value = {
                     let d_value = unsafe { d_matrix[[i, j]].assume_init() };
-                    let score = if are_equal(j, i) { params.match_ } else { params.mismatch };
+                    let score = if are_equal(j, i) {
+                        params.match_
+                    } else {
+                        params.mismatch
+                    };
                     max(max(d_value + score, new_p_value), new_q_value)
                 };
-                d_matrix[[i+1, j+1]] = MaybeUninit::new(new_d_value);
+                d_matrix[[i + 1, j + 1]] = MaybeUninit::new(new_d_value);
             }
         }
 
@@ -93,9 +120,15 @@ impl<F: Fn(usize, usize) -> bool> GotohMatrices<F> {
         }
     }
 
-    pub fn backtrack(&self) -> Alignment {
+    pub fn backtrack(&self) -> GotohAlignment {
         let (p, d, q) = (&self.p, &self.d, &self.q);
-        let score = |x, y| if (self.are_equal)(x, y) { self.params.match_ } else { self.params.mismatch };
+        let score = |x, y| {
+            if (self.are_equal)(x, y) {
+                self.params.match_
+            } else {
+                self.params.mismatch
+            }
+        };
 
         let (mut i, mut j) = self.p.dim();
         let mut matrix = GotohMatrix::D;
@@ -104,54 +137,58 @@ impl<F: Fn(usize, usize) -> bool> GotohMatrices<F> {
         while i != 0 && j != 0 {
             match matrix {
                 GotohMatrix::D => {
-                    if d[[i, j]] == d[[i-1, j-1]] + score(j-1, i-1) {
-                        steps.push((Some(j-1), Some(i-1)));
+                    if d[[i, j]] == d[[i - 1, j - 1]] + score(j - 1, i - 1) {
+                        steps.push((Some(j - 1), Some(i - 1)));
                         i -= 1;
                         j -= 1;
-                    } else if d[[i, j]] == p[[i-1, j-1]] {
+                    } else if d[[i, j]] == p[[i - 1, j - 1]] {
                         matrix = GotohMatrix::P
-                    } else if d[[i, j]] == q[[i-1, j-1]] {
+                    } else if d[[i, j]] == q[[i - 1, j - 1]] {
                         matrix = GotohMatrix::Q
                     } else {
                         unreachable!()
                     }
-                },
+                }
                 GotohMatrix::P => {
-                    if p[[i-1, j-1]] == d[[i-1, j]] + self.params.gap_opening + self.params.gap_enlargement {
+                    if p[[i - 1, j - 1]]
+                        == d[[i - 1, j]] + self.params.gap_opening + self.params.gap_enlargement
+                    {
                         matrix = GotohMatrix::D
-                    } else if p[[i-1, j-1]] == p[[i-2, j-1]] + self.params.gap_enlargement {
+                    } else if p[[i - 1, j - 1]] == p[[i - 2, j - 1]] + self.params.gap_enlargement {
                         matrix = GotohMatrix::P
                     } else {
                         unreachable!()
                     }
-                    steps.push((None, Some(i-1)));
+                    steps.push((None, Some(i - 1)));
                     i -= 1
-                },
+                }
                 GotohMatrix::Q => {
-                    if q[[i-1, j-1]] == d[[i, j-1]] + self.params.gap_opening + self.params.gap_enlargement {
+                    if q[[i - 1, j - 1]]
+                        == d[[i, j - 1]] + self.params.gap_opening + self.params.gap_enlargement
+                    {
                         matrix = GotohMatrix::D
-                    } else if q[[i-1, j-1]] == q[[i-1, j-2]] + self.params.gap_enlargement {
+                    } else if q[[i - 1, j - 1]] == q[[i - 1, j - 2]] + self.params.gap_enlargement {
                         matrix = GotohMatrix::Q
                     } else {
                         unreachable!()
                     }
-                    steps.push((Some(j-1), None));
+                    steps.push((Some(j - 1), None));
                     j -= 1
                 }
             }
         }
 
         while j != 0 {
-            steps.push((Some(j-1), None));
+            steps.push((Some(j - 1), None));
             j -= 1
         }
 
         while i != 0 {
-            steps.push((None, Some(i-1)));
+            steps.push((None, Some(i - 1)));
             i -= 1
         }
 
-        Alignment { steps }
+        GotohAlignment { steps }
     }
 
     /*
@@ -254,15 +291,24 @@ impl<F: Fn(usize, usize) -> bool> GotohMatrices<F> {
     }*/
 }
 
-impl Alignment {
-    pub fn new<P: PartialEq, V: AsRef<[P]>>(params: GotohParameters, seq1: V, seq2: V) -> Alignment {
+impl GotohAlignment {
+    pub fn new<P: PartialEq, V: AsRef<[P]>>(
+        params: &GotohParameters,
+        seq1: V,
+        seq2: V,
+    ) -> GotohAlignment {
         let seq1 = seq1.as_ref();
         let seq2 = seq2.as_ref();
         let are_equal = |x, y| seq1[x] == seq2[y];
         Self::new_with_equality_fn(params, seq1.len(), seq2.len(), are_equal)
     }
 
-    pub fn new_with_equality_fn<F: Fn(usize, usize) -> bool>(params: GotohParameters, seq1_len: usize, seq2_len: usize, are_equal: F) -> Alignment {
+    pub fn new_with_equality_fn<F: Fn(usize, usize) -> bool>(
+        params: &GotohParameters,
+        seq1_len: usize,
+        seq2_len: usize,
+        are_equal: F,
+    ) -> GotohAlignment {
         let matrices: GotohMatrices<_> = GotohMatrices::new(params, seq1_len, seq2_len, are_equal);
         matrices.backtrack()
     }
@@ -282,18 +328,19 @@ mod tests {
         let seq1 = vec!['C', 'C', 'G', 'A'];
         let seq2 = vec!['C', 'G'];
         let are_equal = |x, y| seq1[x] == seq2[y];
-        let matrices: GotohMatrices<_> = GotohMatrices::new(params, seq1.len(), seq2.len(), are_equal);
+        let matrices: GotohMatrices<_> =
+            GotohMatrices::new(&params, seq1.len(), seq2.len(), are_equal);
         println!("{}", matrices.p);
         println!("{}", matrices.d);
         println!("{}", matrices.q);
 
-        let p = array![[-8, -9, -10, -11],
-                       [-3, -7,  -8,  -9]];
-        let d = array![[0, -4, -5, -6, -7],
-                       [-4, 1, -3, -4, -5],
-                       [-5, -3, 0, -2, -5]];
-        let q = array![[-8, -3, -4, -5],
-                       [-9, -7, -4, -5]];
+        let p = array![[-8, -9, -10, -11], [-3, -7, -8, -9]];
+        let d = array![
+            [0, -4, -5, -6, -7],
+            [-4, 1, -3, -4, -5],
+            [-5, -3, 0, -2, -5]
+        ];
+        let q = array![[-8, -3, -4, -5], [-9, -7, -4, -5]];
 
         assert_eq!(p, matrices.p);
         assert_eq!(d, matrices.d);
@@ -305,19 +352,25 @@ mod tests {
         let params = GotohParameters::new(1, -3, -3, -1);
         let seq1 = vec!['C', 'C', 'G', 'A'];
         let seq2 = vec!['C', 'G'];
-        let alignment = Alignment::new(params, &seq1, &seq2);
+        let alignment = GotohAlignment::new(&params, &seq1, &seq2);
         let (s1, s2): (Vec<_>, Vec<_>) = alignment.steps.into_iter().rev().unzip();
 
-        let s1: String = s1.into_iter().map(|s| match s {
-            Some(i) => seq1[i],
-            None => '-'
-        }).collect();
+        let s1: String = s1
+            .into_iter()
+            .map(|s| match s {
+                Some(i) => seq1[i],
+                None => '-',
+            })
+            .collect();
         println!("{}", s1);
 
-        let s2: String = s2.into_iter().map(|s| match s {
-            Some(i) => seq2[i],
-            None => '-'
-        }).collect();
+        let s2: String = s2
+            .into_iter()
+            .map(|s| match s {
+                Some(i) => seq2[i],
+                None => '-',
+            })
+            .collect();
         println!("{}", s2);
 
         assert_eq!(s1, "CCGA");
